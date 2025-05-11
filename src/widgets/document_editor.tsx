@@ -17,6 +17,152 @@ export const DocumentEditor = () => {
   const [showChildren, setShowChildren] = useState<boolean>(true);
   const [includeChildren, setIncludeChildren] = useState<boolean>(true);
   const [childrenTextContent, setChildrenTextContent] = useState<{id: string, text: string}[]>([]);
+  const [tempFilePath, setTempFilePath] = useState<string | null>(null);
+  const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
+  const [savedDrafts, setSavedDrafts] = useState<{[key: string]: {timestamp: number, content: string, name: string}}>({}); 
+  const [showDraftsModal, setShowDraftsModal] = useState<boolean>(false);
+
+  // Load saved drafts on initial render
+  useEffect(() => {
+    try {
+      const storedDrafts = localStorage.getItem('remnote-document-editor-drafts');
+      if (storedDrafts) {
+        setSavedDrafts(JSON.parse(storedDrafts));
+      }
+    } catch (e) {
+      console.error('Error loading saved drafts:', e);
+    }
+  }, []);
+
+  // Helper function to save drafts to localStorage
+  const saveDraftsToStorage = (updatedDrafts: {[key: string]: {timestamp: number, content: string, name: string}}) => {
+    try {
+      localStorage.setItem('remnote-document-editor-drafts', JSON.stringify(updatedDrafts));
+      setSavedDrafts(updatedDrafts);
+    } catch (e) {
+      console.error('Error saving drafts to storage:', e);
+      setDebug(`Error saving to localStorage: ${String(e)}`);
+    }
+  };
+
+  // Save current content as draft
+  const saveAsDraft = () => {
+    try {
+      if (!focusedRemId) {
+        setStatus('No document selected to save as draft');
+        return;
+      }
+
+      // Create a draft name
+      const now = new Date();
+      const timestamp = now.getTime();
+      const dateStr = now.toLocaleString();
+      
+      // Determine content to save
+      let contentToSave = isEditing ? editedContent : remContent;
+      
+      // Make sure we have valid content
+      if (!contentToSave) {
+        contentToSave = JSON.stringify({
+          id: focusedRemId,
+          text: plainTextContent || '',
+          savedAt: dateStr
+        }, null, 2);
+      }
+      
+      // Create doc name for display
+      const docName = plainTextContent 
+        ? plainTextContent.substring(0, 30) + (plainTextContent.length > 30 ? '...' : '')
+        : `Document ${focusedRemId.substring(0, 8)}`;
+      
+      // Update drafts
+      const newDrafts = {
+        ...savedDrafts,
+        [focusedRemId + '-' + timestamp]: {
+          timestamp,
+          content: contentToSave,
+          name: docName
+        }
+      };
+      
+      saveDraftsToStorage(newDrafts);
+      setStatus(`Draft saved: ${docName} at ${dateStr}`);
+    } catch (e) {
+      console.error('Error saving draft:', e);
+      setDebug(`Draft save error: ${String(e)}`);
+      setStatus('Error saving draft');
+    }
+  };
+  
+  // Load a draft
+  const loadDraft = (draftKey: string) => {
+    try {
+      const draft = savedDrafts[draftKey];
+      if (!draft) {
+        setStatus('Draft not found');
+        return;
+      }
+      
+      // Set the content for editing
+      setEditedContent(draft.content);
+      setIsEditing(true);
+      setStatus(`Draft loaded: ${draft.name} from ${new Date(draft.timestamp).toLocaleString()}`);
+      setShowDraftsModal(false);
+    } catch (e) {
+      console.error('Error loading draft:', e);
+      setDebug(`Draft load error: ${String(e)}`);
+      setStatus('Error loading draft');
+    }
+  };
+  
+  // Delete a draft
+  const deleteDraft = (draftKey: string) => {
+    try {
+      const { [draftKey]: draftToRemove, ...remainingDrafts } = savedDrafts;
+      saveDraftsToStorage(remainingDrafts);
+      setStatus('Draft deleted');
+    } catch (e) {
+      console.error('Error deleting draft:', e);
+      setDebug(`Draft deletion error: ${String(e)}`);
+      setStatus('Error deleting draft');
+    }
+  };
+  
+  // Auto-save current document while editing
+  useEffect(() => {
+    if (isEditing && focusedRemId && editedContent) {
+      // Create a debounced auto-save
+      const autoSaveTimeout = setTimeout(() => {
+        try {
+          // Create a special auto-save draft key
+          const autoSaveKey = `autosave-${focusedRemId}`;
+          
+          // Create doc name for display
+          const docName = plainTextContent 
+            ? plainTextContent.substring(0, 30) + (plainTextContent.length > 30 ? '...' : '')
+            : `Document ${focusedRemId.substring(0, 8)}`;
+          
+          // Update drafts with auto-save
+          const newDrafts = {
+            ...savedDrafts,
+            [autoSaveKey]: {
+              timestamp: Date.now(),
+              content: editedContent,
+              name: `[Auto] ${docName}`
+            }
+          };
+          
+          saveDraftsToStorage(newDrafts);
+          // No status update to avoid disturbing the user
+        } catch (e) {
+          console.error('Error auto-saving:', e);
+        }
+      }, 3000); // Auto-save after 3 seconds of inactivity
+      
+      // Clean up timeout
+      return () => clearTimeout(autoSaveTimeout);
+    }
+  }, [isEditing, editedContent, focusedRemId]);
 
   // Helper function to inspect object
   const inspectObject = (obj: any): string => {
@@ -814,8 +960,428 @@ export const DocumentEditor = () => {
     );
   };
 
+  // Function to prepare document content for export
+  const prepareDocumentContent = () => {
+    if (!focusedRem) {
+      setStatus('No document selected');
+      return null;
+    }
+    
+    try {
+      // Create JSON content 
+      const content = {
+        id: focusedRemId || '',
+        text: plainTextContent || ''
+      };
+      
+      // Include text array if available
+      if (focusedRem.text && Array.isArray(focusedRem.text)) {
+        // @ts-ignore
+        content.textArray = focusedRem.text;
+      }
+      
+      // Include essential metadata
+      ['type', 'parent'].forEach(prop => {
+        if (focusedRem[prop]) {
+          // @ts-ignore
+          content[prop] = focusedRem[prop];
+        }
+      });
+      
+      // Include children if enabled
+      if (includeChildren && childrenTextContent.length > 0) {
+        // @ts-ignore
+        content.children = childrenTextContent;
+      }
+      
+      return JSON.stringify(content, null, 2);
+    } catch (e) {
+      console.error('Error preparing content:', e);
+      setDebug(`Error preparing content: ${String(e)}`);
+      
+      // Fallback to basic content
+      return JSON.stringify({ 
+        id: focusedRemId || '', 
+        text: plainTextContent || '' 
+      }, null, 2);
+    }
+  };
+  
+  // Generate a filename for the document
+  const generateFilename = () => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const docId = focusedRemId ? focusedRemId.substring(0, 8) : 'unknown';
+    return `remnote-doc-${docId}-${timestamp}.json`;
+  };
+
+  // Generate a VSCode URI for the document
+  const generateVSCodeUri = (draftKey: string) => {
+    try {
+      // Get the draft content
+      const draft = savedDrafts[draftKey];
+      if (!draft) {
+        setDebug(`Draft not found for key: ${draftKey}`);
+        return null;
+      }
+      
+      // Create a temporary filename - use simpler format
+      const filename = `remnote-${draftKey.split('-')[0]}.json`;
+      
+      // For VS Code URI, we need to keep the content reasonably short
+      // as URIs have length limitations in browsers
+      const contentJson = draft.content;
+      if (!contentJson || contentJson.length > 100000) {
+        setDebug(`Content too large for URI: ${contentJson?.length || 0} chars`);
+        return null;
+      }
+      
+      // Try different URI approaches for VS Code
+      
+      // Approach 1: Use the vscode:// URI scheme with 'untitled' (works in some environments)
+      try {
+        // This approach creates a new file with content in VS Code
+        const encodedContent = encodeURIComponent(contentJson);
+        return `vscode://file/untitled:${filename}?${encodedContent}`;
+      } catch (e1) {
+        console.error('Error with primary VS Code URI approach:', e1);
+        setDebug(`Primary VS Code URI approach failed: ${String(e1)}`);
+        
+        // Approach 2: Use the vscode.dev online editor (works across all browsers)
+        try {
+          // This will open VS Code web version
+          const contentParam = encodeURIComponent(contentJson);
+          const webUrl = `https://vscode.dev/# "untitled:${filename}"`;
+          setDebug(`Falling back to VS Code web URL: ${webUrl}`);
+          return webUrl;
+        } catch (e2) {
+          console.error('Error with fallback VS Code URI approach:', e2);
+          setDebug(`All VS Code URI approaches failed`);
+          return null;
+        }
+      }
+    } catch (e) {
+      console.error('Error generating VSCode URI:', e);
+      setDebug(`VSCode URI error: ${String(e)}`);
+      return null;
+    }
+  };
+  
+  // Open draft in VSCode
+  const openDraftInVSCode = (draftKey: string) => {
+    try {
+      setLoading(true);
+      setStatus('Preparing to open in VS Code...');
+      
+      // First, try the VS Code URI approach
+      const uri = generateVSCodeUri(draftKey);
+      if (!uri) {
+        throw new Error('Could not generate VS Code URI - content may be too large');
+      }
+      
+      // Try to open VS Code with this URI
+      window.open(uri, '_blank');
+      
+      // Just in case we need a fallback download option
+      const draft = savedDrafts[draftKey];
+      if (draft) {
+        setStatus('Attempted to open in VS Code. If VS Code doesn\'t open, use the "Download" button instead.');
+        setDebug(`
+VS Code URI generated: ${uri}
+
+Common reasons VS Code might not open:
+1. VS Code is not installed on your system
+2. The vscode:// protocol handler is not registered
+3. The content is too large for a URI parameter
+
+Alternative approaches:
+1. Click "Download" to save the file locally, then open in VS Code
+2. Install the "VS Code URL Handler" extension in VS Code
+3. Configure VS Code as your default JSON editor in your system
+        `);
+      } else {
+        throw new Error('Draft not found');
+      }
+    } catch (e) {
+      console.error('Error opening in VS Code:', e);
+      setDebug(`VS Code open error: ${String(e)}`);
+      setStatus('Failed to open in VS Code. Use the "Download" button instead.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Download a draft as a file
+  const downloadDraft = (draftKey: string) => {
+    try {
+      setLoading(true);
+      
+      // Get the draft content
+      const draft = savedDrafts[draftKey];
+      if (!draft) {
+        throw new Error('Draft not found');
+      }
+      
+      // Generate filename
+      const timestamp = new Date(draft.timestamp).toISOString().replace(/[:.]/g, '-');
+      const fileName = `remnote-draft-${draftKey.split('-')[0]}-${timestamp}.json`;
+      
+      // Create and download the file
+      const blob = new Blob([draft.content], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+      
+      setStatus(`Draft downloaded as ${fileName}`);
+    } catch (e) {
+      console.error('Error downloading draft:', e);
+      setDebug(`Draft download error: ${String(e)}`);
+      setStatus('Error downloading draft');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // APPROACH 1: Copy to clipboard
+  const copyToClipboard = async () => {
+    try {
+      setLoading(true);
+      setStatus('Preparing document content...');
+      
+      const fileContent = prepareDocumentContent();
+      if (!fileContent) return;
+      
+      // Copy to clipboard
+      try {
+        await navigator.clipboard.writeText(fileContent);
+        setStatus('Content copied to clipboard! Paste into your editor, then copy the edited content back.');
+        setDebug('Document JSON copied to clipboard. Edit in any text editor and paste back.');
+      } catch (clipboardError) {
+        console.error('Error copying to clipboard:', clipboardError);
+        setDebug(`Clipboard error: ${String(clipboardError)}`);
+        
+        // Fallback for browsers that don't support clipboard API
+        try {
+          const textArea = document.createElement('textarea');
+          textArea.value = fileContent;
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textArea);
+          setStatus('Content copied to clipboard! Paste into your editor, then copy the edited content back.');
+        } catch (fallbackError) {
+          console.error('Fallback clipboard copy failed:', fallbackError);
+          setDebug(`Fallback clipboard error: ${String(fallbackError)}`);
+          setStatus('Failed to copy to clipboard. Your browser may not support this feature.');
+        }
+      }
+    } catch (e) {
+      console.error('Error in clipboard flow:', e);
+      setDebug(`Clipboard error: ${String(e)}`);
+      setStatus('Error copying content to clipboard.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // APPROACH 2: Download as file
+  const downloadAsFile = () => {
+    try {
+      setLoading(true);
+      setStatus('Preparing file for download...');
+      
+      const fileContent = prepareDocumentContent();
+      if (!fileContent) return;
+      
+      const fileName = generateFilename();
+      
+      // Create a downloadable file with the content
+      const blob = new Blob([fileContent], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+      
+      setStatus('File downloaded! Edit and then import changes using the "Import File" button.');
+      setDebug(`File downloaded: ${fileName}`);
+    } catch (e) {
+      console.error('Error downloading file:', e);
+      setDebug(`Download error: ${String(e)}`);
+      setStatus('Error creating downloadable file.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // APPROACH 3: Open in VS Code
+  const openInVSCode = () => {
+    try {
+      setLoading(true);
+      setStatus('Preparing to open in VS Code...');
+      
+      // First save the current document as a draft
+      if (!focusedRemId) {
+        throw new Error('No document selected');
+      }
+      
+      // Create a draft name
+      const now = new Date();
+      const timestamp = now.getTime();
+      
+      // Determine content to save
+      const fileContent = prepareDocumentContent();
+      if (!fileContent) {
+        throw new Error('Failed to prepare document content');
+      }
+      
+      // Create doc name for display
+      const docName = plainTextContent 
+        ? plainTextContent.substring(0, 30) + (plainTextContent.length > 30 ? '...' : '')
+        : `Document ${focusedRemId.substring(0, 8)}`;
+      
+      // Create a unique key for this VSCode-specific draft
+      const vscodeKey = `vscode-${focusedRemId}-${timestamp}`;
+      
+      // Save to drafts storage
+      const newDrafts = {
+        ...savedDrafts,
+        [vscodeKey]: {
+          timestamp,
+          content: fileContent,
+          name: `[VS Code] ${docName}`
+        }
+      };
+      
+      saveDraftsToStorage(newDrafts);
+      
+      // Try to open directly in VS Code using the URI scheme
+      const uri = generateVSCodeUri(vscodeKey);
+      if (!uri) {
+        throw new Error(`Failed to generate VS Code URI - content may be too large (${fileContent.length} chars)`);
+      }
+      
+      // Try to open VS Code with this URI
+      window.open(uri, '_blank');
+      
+      setStatus('Attempting to open in VS Code. Check your browser for permission requests.');
+      setDebug(`
+VS Code attempt in progress...
+Document saved to browser storage with key: ${vscodeKey}
+VS Code URI: ${uri}
+
+If VS Code doesn't open automatically:
+1. Check the "Saved Drafts" panel
+2. Find the draft named "[VS Code] ${docName}"
+3. Use the "VS Code" or "Download" button
+
+Note: The VS Code protocol handler requires:
+- VS Code to be installed on your system
+- The URL protocol handler to be registered
+- On macOS, you may need the "VS Code URL Handler" extension
+      `);
+      
+      // Set a timer to guide the user after a short delay
+      setTimeout(() => {
+        setStatus('VS Code may not have opened. You can access your document from "Saved Drafts"');
+      }, 3000);
+      
+    } catch (e) {
+      console.error('Error in VS Code flow:', e);
+      setDebug(`VS Code flow error: ${String(e)}`);
+      setStatus('Error opening in VS Code. You can still access the draft from "Saved Drafts".');
+      
+      // Guide user to saved drafts
+      setTimeout(() => {
+        setShowDraftsModal(true);
+      }, 1500);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Function to handle file upload (after external editing)
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    try {
+      const file = event.target.files?.[0];
+      if (!file) {
+        setStatus('No file selected');
+        return;
+      }
+      
+      setLoading(true);
+      setStatus('Reading file...');
+      
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const content = e.target?.result as string;
+          if (!content) {
+            throw new Error('Empty file content');
+          }
+          
+          // Parse the content to verify it's valid JSON
+          const parsedContent = JSON.parse(content);
+          
+          // Set the content for editing
+          setEditedContent(JSON.stringify(parsedContent, null, 2));
+          
+          // Switch to edit mode
+          setIsEditing(true);
+          setStatus('File imported. Review and click "Save Changes" to apply.');
+          setShowUploadModal(false);
+        } catch (parseError) {
+          console.error('Error parsing file content:', parseError);
+          setDebug(`File parse error: ${String(parseError)}`);
+          setStatus('Invalid JSON file. Please select a valid JSON file.');
+        }
+      };
+      
+      reader.onerror = () => {
+        console.error('Error reading file:', reader.error);
+        setDebug(`File read error: ${String(reader.error)}`);
+        setStatus('Error reading file.');
+      };
+      
+      reader.readAsText(file);
+    } catch (e) {
+      console.error('Error handling file upload:', e);
+      setDebug(`File upload error: ${String(e)}`);
+      setStatus('Error handling file upload.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Function to handle manual paste
+  const pasteFromClipboard = () => {
+    setIsEditing(true);
+    setEditedContent(""); // Clear the content to make it obvious that user needs to paste
+    setStatus('Please paste your JSON content below and click "Save Changes"');
+    setDebug('Manual paste mode activated - paste your JSON directly into the editor');
+  };
+  
+  const toggleUploadModal = () => {
+    setShowUploadModal(!showUploadModal);
+  };
+
   return (
-    <div className="p-4 flex flex-col gap-3">
+    <div className="p-4 flex flex-col gap-3 relative">
       <h1 className="text-xl font-bold">Document Editor</h1>
       
       <div className="flex flex-col gap-2">
@@ -845,15 +1411,96 @@ export const DocumentEditor = () => {
           </div>
         </div>
         
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {!isEditing ? (
-            <button 
-              onClick={handleEditClick}
-              disabled={!focusedRem || loading}
-              className="px-3 py-1 bg-blue-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-blue-600"
-            >
-              Edit Document
-            </button>
+            <>
+              <button 
+                onClick={handleEditClick}
+                disabled={!focusedRem || loading}
+                className="px-3 py-1 bg-blue-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-blue-600"
+              >
+                Edit Document
+              </button>
+              
+              <div className="flex-1"></div>
+
+              {/* Browser Storage Options */}
+              <div className="text-sm font-medium">Browser Storage:</div>
+              
+              <button 
+                onClick={saveAsDraft}
+                disabled={!focusedRem || loading}
+                className="px-3 py-1 bg-orange-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-orange-600"
+                title="Save current document to browser storage"
+              >
+                Save as Draft
+              </button>
+              
+              <button 
+                onClick={() => setShowDraftsModal(true)}
+                className="px-3 py-1 bg-yellow-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-yellow-600"
+                title="View saved drafts"
+              >
+                Saved Drafts {Object.keys(savedDrafts).length > 0 && `(${Object.keys(savedDrafts).length})`}
+              </button>
+
+              <div className="w-full"></div>
+              
+              <div className="text-sm font-medium mt-2">External Editing:</div>
+              
+              {/* Approach 1: Clipboard */}
+              <button 
+                onClick={copyToClipboard}
+                disabled={!focusedRem || loading}
+                className="px-3 py-1 bg-purple-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-purple-600"
+                title="Copy JSON to clipboard to edit in external editor"
+              >
+                Copy to Clipboard
+              </button>
+              
+              {/* Approach 2: Download */}
+              <button 
+                onClick={downloadAsFile}
+                disabled={!focusedRem || loading}
+                className="px-3 py-1 bg-indigo-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-indigo-600"
+                title="Download as a JSON file to edit locally"
+              >
+                Download File
+              </button>
+              
+              {/* Approach 3: VS Code */}
+              <button 
+                onClick={openInVSCode}
+                disabled={!focusedRem || loading}
+                className="px-3 py-1 bg-cyan-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-cyan-600"
+                title="Try to open in VS Code (may not work in all environments)"
+              >
+                Open in VS Code
+              </button>
+              
+              {/* Import options */}
+              <div className="w-full"></div>
+              
+              <div className="text-sm font-medium mt-2">Import Changes:</div>
+              
+              <button 
+                onClick={pasteFromClipboard}
+                disabled={loading}
+                className="px-3 py-1 bg-emerald-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-emerald-600"
+                title="Paste JSON content from clipboard"
+              >
+                Paste Content
+              </button>
+              
+              <button 
+                onClick={toggleUploadModal}
+                disabled={loading}
+                className="px-3 py-1 bg-amber-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-amber-600"
+                title="Import an edited JSON file"
+              >
+                Import File
+              </button>
+            </>
           ) : (
             <>
               <div className="flex items-center gap-2">
@@ -875,6 +1522,16 @@ export const DocumentEditor = () => {
               >
                 Save Changes
               </button>
+              
+              <button 
+                onClick={saveAsDraft}
+                disabled={loading || !editedContent}
+                className="px-3 py-1 bg-orange-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-orange-600"
+                title="Save as draft without updating document"
+              >
+                Save as Draft
+              </button>
+              
               <button 
                 onClick={handleCancelClick}
                 disabled={loading}
@@ -900,21 +1557,30 @@ export const DocumentEditor = () => {
             <strong>Rem Object:</strong> {objectInfo}
           </div>
         )}
+        
+        {tempFilePath && (
+          <div className="text-xs text-gray-400 font-mono overflow-auto max-h-12 border-t pt-1">
+            <strong>Temp File:</strong> {tempFilePath}
+          </div>
+        )}
       </div>
       
+      {/* Document content panel */}
       <div className="flex gap-4 mt-2">
-        {/* Document content panel */}
         <div className="flex-1">
           {isEditing ? (
             <div className="flex flex-col gap-2">
               <p className="text-sm font-medium">
-                Edit document content (JSON format):
+                {editedContent 
+                  ? "Edit document content (JSON format):" 
+                  : "Paste your JSON content below:"}
               </p>
               <textarea 
                 value={editedContent}
                 onChange={(e) => setEditedContent(e.target.value)}
                 className="w-full h-64 border border-gray-300 rounded p-2 font-mono text-sm"
                 disabled={loading}
+                placeholder={editedContent ? "" : "Paste your JSON content here..."}
               />
             </div>
           ) : (
@@ -966,16 +1632,137 @@ export const DocumentEditor = () => {
         )}
       </div>
       
+      {/* Upload modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-10">
+          <div className="bg-white p-4 rounded-lg shadow-lg max-w-md w-full">
+            <h2 className="text-lg font-bold mb-4">Import JSON File</h2>
+            <p className="mb-4">Select a JSON file to import:</p>
+            
+            <input 
+              type="file" 
+              accept=".json" 
+              onChange={handleFileUpload}
+              className="w-full mb-4"
+            />
+            
+            <div className="flex justify-end gap-2">
+              <button 
+                onClick={() => setShowUploadModal(false)}
+                className="px-3 py-1 bg-gray-300 rounded"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Drafts modal */}
+      {showDraftsModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-10">
+          <div className="bg-white p-4 rounded-lg shadow-lg max-w-xl w-full">
+            <h2 className="text-lg font-bold mb-4">Saved Drafts</h2>
+            
+            {Object.keys(savedDrafts).length === 0 ? (
+              <p className="text-gray-500 mb-4">No saved drafts found</p>
+            ) : (
+              <div className="max-h-80 overflow-y-auto mb-4">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="text-left p-2">Document</th>
+                      <th className="text-left p-2">Saved</th>
+                      <th className="text-right p-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(savedDrafts)
+                      .sort(([_keyA, a], [_keyB, b]) => b.timestamp - a.timestamp)
+                      .map(([key, draft]) => (
+                        <tr key={key} className="border-b">
+                          <td className="p-2">{draft.name}</td>
+                          <td className="p-2">{new Date(draft.timestamp).toLocaleString()}</td>
+                          <td className="p-2 text-right flex justify-end gap-1">
+                            <button
+                              onClick={() => loadDraft(key)}
+                              className="text-blue-500 hover:text-blue-700 px-1"
+                              title="Load draft for editing in this widget"
+                            >
+                              Load
+                            </button>
+                            <button
+                              onClick={() => openDraftInVSCode(key)}
+                              className="text-purple-500 hover:text-purple-700 px-1"
+                              title="Try to open this draft directly in VS Code"
+                            >
+                              VS Code
+                            </button>
+                            <button
+                              onClick={() => downloadDraft(key)}
+                              className="text-green-500 hover:text-green-700 px-1"
+                              title="Download this draft as a JSON file"
+                            >
+                              Download
+                            </button>
+                            <button
+                              onClick={() => deleteDraft(key)}
+                              className="text-red-500 hover:text-red-700 px-1"
+                              title="Delete this draft"
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            
+            <div className="flex justify-end">
+              <button 
+                onClick={() => setShowDraftsModal(false)}
+                className="px-3 py-1 bg-gray-300 rounded"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <div className="mt-4 text-sm">
         <p><strong>Usage:</strong></p>
         <ol className="list-decimal pl-5">
           <li>Click on a document in RemNote to focus it</li>
           <li>Click "Refresh" to load the document</li>
           <li>Toggle "Show Children" to view document's children</li>
-          <li>Click "Edit Document" to make changes to the document in JSON format</li>
+          <li>External editing options:
+            <ul className="list-disc pl-5 mt-1">
+              <li><strong>Edit Document</strong> - Edit directly in this widget</li>
+              <li><strong>Copy to Clipboard</strong> - Copy JSON to clipboard to edit in your preferred editor</li>
+              <li><strong>Download File</strong> - Download as a JSON file to edit locally</li>
+              <li><strong>Open in VS Code</strong> - Try to open document in VS Code (experimental)</li>
+            </ul>
+          </li>
+          <li>Import your changes:
+            <ul className="list-disc pl-5 mt-1">
+              <li><strong>Paste Content</strong> - Manually paste edited JSON content</li>
+              <li><strong>Import File</strong> - Upload an edited JSON file</li>
+            </ul>
+          </li>
           <li>Toggle "Include Children" to edit child documents as well</li>
           <li>Click "Save Changes" to update the document and its children</li>
-          <li>Click on a child item to navigate to it</li>
+          <li>Browser storage options:
+            <ul className="list-disc pl-5 mt-1">
+              <li><strong>Save as Draft</strong> - Save current document to browser storage</li>
+              <li><strong>Saved Drafts</strong> - View and load previously saved drafts</li>
+              <li><strong>Open in VS Code</strong> - Creates a special draft and attempts to open it in VS Code</li>
+              <li>From the Drafts panel, you can directly open any draft in VS Code or download it</li>
+              <li>Documents are auto-saved while editing (every 3 seconds)</li>
+            </ul>
+          </li>
         </ol>
       </div>
     </div>
