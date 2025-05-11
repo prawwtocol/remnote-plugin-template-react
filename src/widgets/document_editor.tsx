@@ -607,45 +607,105 @@ export const DocumentEditor = () => {
         
         // Now save children if present
         if (hasChildren && includeChildren) {
-          setDebug(`Saving changes to ${parsedContent.children.length} children`);
+          setDebug(`Preparing to save changes to ${parsedContent.children.length} children`);
           let savedChildrenCount = 0;
+          let failedChildren = 0;
           
           for (let i = 0; i < parsedContent.children.length; i++) {
             const childData = parsedContent.children[i];
-            if (childData && childData.id && childData.text) {
+            if (childData && childData.id) {
               try {
+                setDebug(`Processing child ${i+1} with ID: ${childData.id}`);
                 const childRem = await plugin.rem.findOne(childData.id);
-                if (childRem) {
+                
+                if (!childRem) {
+                  setDebug(`Could not find child ${i+1} with ID: ${childData.id}`);
+                  failedChildren++;
+                  continue;
+                }
+                
+                // Save the text content if it exists
+                if (childData.text !== undefined) {
                   // @ts-ignore - ignoring TypeScript errors
                   if (typeof childRem.setText === 'function') {
                     try {
-                      // Try to detect if we need an array format
-                      const childText = typeof childData.text === 'string' ? 
-                        childData.text : JSON.stringify(childData.text);
+                      setDebug(`Saving child ${i+1} text content: ${String(childData.text).substring(0, 20)}...`);
+                      
+                      // Format text appropriately based on the type
+                      let textToSave = childData.text;
+                      
+                      // Handle array text format if needed
+                      if (Array.isArray(textToSave)) {
+                        // Already an array, use as is
+                        setDebug(`Child ${i+1} text is already an array with ${textToSave.length} items`);
+                      } else if (typeof textToSave === 'string') {
+                        // Check if we need to convert to array
+                        if (childRem.text && Array.isArray(childRem.text)) {
+                          textToSave = textToSave.split('\n');
+                          setDebug(`Child ${i+1} text converted to array with ${textToSave.length} items`);
+                        }
+                        // Otherwise use as string
+                      } else {
+                        // Handle objects or other types
+                        textToSave = JSON.stringify(textToSave);
+                        setDebug(`Child ${i+1} text converted from object to string`);
+                      }
+                      
+                      // Try different saving approaches
+                      try {
+                        // @ts-ignore
+                        await childRem.setText(textToSave);
+                        savedChildrenCount++;
+                        setDebug(`Successfully saved child ${i+1}`);
+                      } catch (saveErr) {
+                        setDebug(`Primary save failed for child ${i+1}, trying alternative: ${String(saveErr)}`);
                         
-                      // @ts-ignore
-                      await childRem.setText(childText);
-                      savedChildrenCount++;
-                      setDebug(`Saved child ${i+1} (${childData.id.substring(0, 8)}...)`);
-                    } catch (childSetError) {
-                      setDebug(`Error setting text for child ${i+1}: ${String(childSetError)}`);
+                        // Try alternative save methods
+                        try {
+                          const stringText = typeof textToSave === 'string' ? 
+                            textToSave : (Array.isArray(textToSave) ? textToSave.join('\n') : String(textToSave));
+                          
+                          // Force a reload of the child to ensure we're working with fresh data
+                          const refreshedChild = await plugin.rem.findOne(childData.id);
+                          if (refreshedChild) {
+                            // @ts-ignore
+                            await refreshedChild.setText(stringText);
+                            savedChildrenCount++;
+                            setDebug(`Saved child ${i+1} using alternative method`);
+                          }
+                        } catch (alternativeErr) {
+                          setDebug(`All save methods failed for child ${i+1}: ${String(alternativeErr)}`);
+                          failedChildren++;
+                        }
+                      }
+                    } catch (textErr) {
+                      setDebug(`Error preparing text for child ${i+1}: ${String(textErr)}`);
+                      failedChildren++;
                     }
                   } else {
                     setDebug(`Child ${i+1} doesn't have setText method`);
+                    failedChildren++;
                   }
                 } else {
-                  setDebug(`Could not find child ${i+1} with ID: ${childData.id.substring(0, 8)}...`);
+                  setDebug(`Child ${i+1} has no text content to save`);
                 }
               } catch (childError) {
                 console.error(`Error saving child ${i+1}:`, childError);
                 setDebug(`Error processing child ${i+1}: ${String(childError)}`);
+                failedChildren++;
               }
             } else {
               setDebug(`Child ${i+1} has invalid data: ${JSON.stringify(childData)}`);
+              failedChildren++;
             }
           }
           
-          setDebug(`Successfully saved ${savedChildrenCount} out of ${parsedContent.children.length} children`);
+          if (savedChildrenCount > 0) {
+            setDebug(`Successfully saved ${savedChildrenCount} out of ${parsedContent.children.length} children`);
+          } else if (failedChildren > 0) {
+            setDebug(`Failed to save any children (${failedChildren} failures)`);
+            throw new Error(`Failed to save child documents. Check debug logs for details.`);
+          }
         }
       } catch (saveError) {
         console.error('Save operation error:', saveError);
