@@ -9,13 +9,14 @@ export const DocumentEditor = () => {
   const [remChildren, setRemChildren] = useState<any[]>([]);
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editedContent, setEditedContent] = useState<string>('');
-  const [editMode, setEditMode] = useState<'json' | 'text'>('text');
   const [plainTextContent, setPlainTextContent] = useState<string>('');
   const [status, setStatus] = useState<string>('Ready');
   const [loading, setLoading] = useState<boolean>(false);
   const [debug, setDebug] = useState<string>('');
   const [objectInfo, setObjectInfo] = useState<string>('');
   const [showChildren, setShowChildren] = useState<boolean>(true);
+  const [includeChildren, setIncludeChildren] = useState<boolean>(true);
+  const [childrenTextContent, setChildrenTextContent] = useState<{id: string, text: string}[]>([]);
 
   // Helper function to inspect object
   const inspectObject = (obj: any): string => {
@@ -157,6 +158,39 @@ export const DocumentEditor = () => {
     }
   };
 
+  // Helper to get children plain text - fixed to properly get text content
+  const getChildrenPlainText = async (children: any[]): Promise<{id: string, text: string}[]> => {
+    const result: {id: string, text: string}[] = [];
+    
+    for (const child of children) {
+      try {
+        // First check if child is just an ID reference
+        if (typeof child === 'string') {
+          // It's likely just an ID, fetch the actual rem
+          try {
+            const childRem = await plugin.rem.findOne(child);
+            if (childRem) {
+              const text = await getPlainText(childRem);
+              result.push({ id: child, text });
+            }
+          } catch (e) {
+            console.error("Error fetching child from ID:", e);
+            result.push({ id: child, text: `[Error loading content for ID: ${child}]` });
+          }
+        } else {
+          // It's a proper object, get text directly
+          const text = await getPlainText(child);
+          const id = child._id || '';
+          result.push({ id, text });
+        }
+      } catch (e) {
+        console.error("Error getting child text:", e);
+      }
+    }
+    
+    return result;
+  };
+
   // Load the currently focused document
   const loadFocusedDocument = async () => {
     try {
@@ -209,10 +243,16 @@ export const DocumentEditor = () => {
           const children = await getRemChildren(focusedRemObj);
           setRemChildren(children || []);
           setDebug('Step 5: Got ' + (children?.length || 0) + ' children');
+          
+          // Also get plain text content of children for editing
+          const childrenTexts = await getChildrenPlainText(children || []);
+          setChildrenTextContent(childrenTexts);
+          setDebug('Step 5b: Got text content for ' + childrenTexts.length + ' children');
         } catch (childrenError) {
           console.error('Error getting children:', childrenError);
           setDebug('Children error: ' + JSON.stringify(childrenError));
           setRemChildren([]);
+          setChildrenTextContent([]);
         }
       }
       
@@ -401,53 +441,55 @@ export const DocumentEditor = () => {
   const handleEditClick = () => {
     setIsEditing(true);
     
-    if (editMode === 'json') {
+    try {
+      // Create a JSON representation of the document
+      const rawData = {
+        id: focusedRemId || '',
+        text: plainTextContent || ''
+      };
+      
+      // Try to add the text array directly if available
+      if (focusedRem && focusedRem.text && Array.isArray(focusedRem.text)) {
+        // @ts-ignore
+        rawData.textArray = focusedRem.text;
+      }
+      
+      // Add useful properties from the debug output
       try {
-        // First try to directly access the raw document structure
-        const rawData = {
-          id: focusedRemId || '',
-          text: plainTextContent || ''
-        };
-        
-        // Try to add the text array directly if available
-        if (focusedRem && focusedRem.text && Array.isArray(focusedRem.text)) {
-          rawData.textArray = focusedRem.text;
+        if (focusedRem) {
+          ['updatedAt', 'createdAt', 'type', 'parent'].forEach(prop => {
+            if (focusedRem[prop]) {
+              // @ts-ignore
+              rawData[prop] = focusedRem[prop];
+            }
+          });
         }
-        
-        // Add useful properties from the debug output
-        try {
-          if (focusedRem) {
-            ['updatedAt', 'createdAt', 'type', 'parent'].forEach(prop => {
-              if (focusedRem[prop]) {
-                // @ts-ignore
-                rawData[prop] = focusedRem[prop];
-              }
-            });
-          }
-        } catch (e) {
-          console.error("Error adding properties:", e);
-        }
-        
-        setEditedContent(JSON.stringify(rawData, null, 2));
       } catch (e) {
-        // Create a basic fallback
-        console.error("Error creating JSON content:", e);
-        const basicData = {
-          id: focusedRemId || '',
-          text: plainTextContent || ''
-        };
-        setEditedContent(JSON.stringify(basicData, null, 2));
+        console.error("Error adding properties:", e);
       }
-    } else {
-      // Plain text mode - use plainTextContent or extract from array
-      if (plainTextContent && plainTextContent !== '[object Object]') {
-        setEditedContent(plainTextContent);
-      } else if (focusedRem && focusedRem.text && Array.isArray(focusedRem.text)) {
-        // If we have an array, join it
-        setEditedContent(focusedRem.text.join('\n'));
-      } else {
-        setEditedContent("");
+      
+      // Include children if the option is enabled
+      if (includeChildren && childrenTextContent.length > 0) {
+        // @ts-ignore
+        rawData.children = childrenTextContent;
       }
+      
+      setEditedContent(JSON.stringify(rawData, null, 2));
+    } catch (e) {
+      // Create a basic fallback
+      console.error("Error creating JSON content:", e);
+      const basicData = {
+        id: focusedRemId || '',
+        text: plainTextContent || ''
+      };
+      
+      // Include basic children if the option is enabled
+      if (includeChildren && childrenTextContent.length > 0) {
+        // @ts-ignore
+        basicData.children = childrenTextContent;
+      }
+      
+      setEditedContent(JSON.stringify(basicData, null, 2));
     }
   };
   
@@ -461,93 +503,154 @@ export const DocumentEditor = () => {
       setLoading(true);
       setStatus('Saving document...');
       
-      if (editMode === 'json') {
+      let parsedContent;
+      try {
         setDebug('Saving: Parsing JSON content');
         // Parse the edited content as JSON
-        const parsedContent = JSON.parse(editedContent);
+        parsedContent = JSON.parse(editedContent);
+        setDebug('JSON parsed successfully: ' + Object.keys(parsedContent).join(', '));
+      } catch (parseError) {
+        console.error('JSON parse error:', parseError);
+        setDebug('Error parsing JSON: ' + String(parseError));
+        throw new Error('Invalid JSON format. Please check your syntax.');
+      }
+      
+      // Check if we need to save children
+      const hasChildren = parsedContent.children && Array.isArray(parsedContent.children);
+      
+      // Save main document first
+      setDebug('Saving: Setting content from JSON for main document');
+      
+      try {
+        // Try using rem API for the main document
+        const remDoc = await plugin.rem.findOne(focusedRemId || '');
+        if (!remDoc) {
+          throw new Error('Document not found for saving');
+        }
         
-        // Use the Rem object directly 
-        setDebug('Saving: Setting content from JSON');
+        // Extract the main document content (excluding children)
+        const mainContent = { ...parsedContent };
+        delete mainContent.children;
         
-        try {
-          // Try using rem API
-          const remDoc = await plugin.rem.findOne(focusedRemId || '');
-          if (remDoc) {
-            // @ts-ignore - ignoring TypeScript errors for now
-            if (typeof remDoc.setContent === 'function') {
-              await remDoc.setContent(parsedContent);
-              setDebug('Saved using setContent()');
-            } else if (typeof remDoc.setText === 'function') {
-              await remDoc.setText(parsedContent);
-              setDebug('Saved using setText()');
+        // Clean up the content before saving
+        ['_id', '__id', 'updatedAt', 'createdAt'].forEach(prop => {
+          if (mainContent[prop]) {
+            delete mainContent[prop];
+          }
+        });
+        
+        // Try to save the plain text first if available
+        let savedMainDocument = false;
+        
+        // First try setText with just the text property if it exists
+        if (mainContent.text && typeof remDoc.setText === 'function') {
+          try {
+            setDebug('Attempting to save main text: ' + String(mainContent.text).substring(0, 50));
+            let textToSave;
+            
+            // Handle array text
+            if (Array.isArray(focusedRem.text)) {
+              if (typeof mainContent.text === 'string') {
+                textToSave = mainContent.text.split('\n');
+              } else {
+                textToSave = mainContent.text;
+              }
             } else {
-              throw new Error('No method to set content found');
+              textToSave = mainContent.text;
             }
-          } else {
-            throw new Error('Document not found for saving');
+            
+            // @ts-ignore
+            await remDoc.setText(textToSave);
+            setDebug('Saved main document using setText()');
+            savedMainDocument = true;
+          } catch (textError) {
+            console.error('Error saving text:', textError);
+            setDebug('Error saving with setText: ' + String(textError));
           }
-        } catch (saveError) {
-          throw new Error(`Save error: ${saveError}`);
         }
-      } else {
-        // Plain text mode
-        setDebug('Saving: Setting plain text content');
         
-        try {
-          // Try using rem API
-          const remDoc = await plugin.rem.findOne(focusedRemId || '');
-          if (remDoc) {
-            // Try various methods to set text content
-            let saved = false;
-            
-            // Check if the original was an array and try to maintain that format
-            if (focusedRem && focusedRem.text && Array.isArray(focusedRem.text)) {
-              try {
-                // Split the edited content into an array like the original
-                const textArray = editedContent.split('\n');
-                
-                // Try to set the array format
-                if (typeof remDoc.setText === 'function') {
-                  // @ts-ignore
-                  await remDoc.setText(textArray);
-                  setDebug('Saved using setText() with array format');
-                  saved = true;
-                }
-              } catch (arrayError) {
-                console.error("Error saving as array:", arrayError);
-                // Fall through to other methods
-              }
-            }
-            
-            // If array method didn't work, try standard methods
-            if (!saved) {
-              // @ts-ignore - ignoring TypeScript errors for now
-              if (typeof remDoc.setText === 'function') {
-                await remDoc.setText(editedContent);
-                setDebug('Saved using setText()');
-                saved = true;
-              } else if (typeof remDoc.setPlainText === 'function') {
-                // @ts-ignore - ignoring TypeScript errors for now
-                await remDoc.setPlainText(editedContent);
-                setDebug('Saved using setPlainText()');
-                saved = true;
-              } else if (typeof remDoc.text === 'function' && typeof remDoc.text.set === 'function') {
-                // @ts-ignore - ignoring TypeScript errors for now
-                await remDoc.text.set(editedContent);
-                setDebug('Saved using text.set()');
-                saved = true;
-              }
-            }
-            
-            if (!saved) {
-              throw new Error('No method to set text found');
-            }
-          } else {
-            throw new Error('Document not found for saving');
+        // If setText didn't work and setContent is available, try that
+        if (!savedMainDocument && typeof remDoc.setContent === 'function') {
+          try {
+            setDebug('Falling back to setContent method');
+            // @ts-ignore
+            await remDoc.setContent(mainContent);
+            setDebug('Saved main document using setContent()');
+            savedMainDocument = true;
+          } catch (contentError) {
+            console.error('Error saving content:', contentError);
+            setDebug('Error saving with setContent: ' + String(contentError));
           }
-        } catch (saveError) {
-          throw new Error(`Save error: ${saveError}`);
         }
+        
+        // Last resort - try to create a new version of the document
+        if (!savedMainDocument) {
+          setDebug('Could not save document with standard methods - trying alternatives');
+          
+          // Backup approach - just set text directly
+          if (typeof remDoc.setText === 'function' && plainTextContent) {
+            try {
+              // @ts-ignore
+              await remDoc.setText(plainTextContent);
+              setDebug('Saved main document using setText with original text');
+              savedMainDocument = true;
+            } catch (backupError) {
+              console.error('Backup save error:', backupError);
+              setDebug('Backup save error: ' + String(backupError));
+            }
+          }
+        }
+        
+        if (!savedMainDocument) {
+          throw new Error('Could not save document with any available method');
+        }
+        
+        // Now save children if present
+        if (hasChildren && includeChildren) {
+          setDebug(`Saving changes to ${parsedContent.children.length} children`);
+          let savedChildrenCount = 0;
+          
+          for (let i = 0; i < parsedContent.children.length; i++) {
+            const childData = parsedContent.children[i];
+            if (childData && childData.id && childData.text) {
+              try {
+                const childRem = await plugin.rem.findOne(childData.id);
+                if (childRem) {
+                  // @ts-ignore - ignoring TypeScript errors
+                  if (typeof childRem.setText === 'function') {
+                    try {
+                      // Try to detect if we need an array format
+                      const childText = typeof childData.text === 'string' ? 
+                        childData.text : JSON.stringify(childData.text);
+                        
+                      // @ts-ignore
+                      await childRem.setText(childText);
+                      savedChildrenCount++;
+                      setDebug(`Saved child ${i+1} (${childData.id.substring(0, 8)}...)`);
+                    } catch (childSetError) {
+                      setDebug(`Error setting text for child ${i+1}: ${String(childSetError)}`);
+                    }
+                  } else {
+                    setDebug(`Child ${i+1} doesn't have setText method`);
+                  }
+                } else {
+                  setDebug(`Could not find child ${i+1} with ID: ${childData.id.substring(0, 8)}...`);
+                }
+              } catch (childError) {
+                console.error(`Error saving child ${i+1}:`, childError);
+                setDebug(`Error processing child ${i+1}: ${String(childError)}`);
+              }
+            } else {
+              setDebug(`Child ${i+1} has invalid data: ${JSON.stringify(childData)}`);
+            }
+          }
+          
+          setDebug(`Successfully saved ${savedChildrenCount} out of ${parsedContent.children.length} children`);
+        }
+      } catch (saveError) {
+        console.error('Save operation error:', saveError);
+        setDebug('Save operation error: ' + String(saveError));
+        throw new Error(saveError instanceof Error ? saveError.message : 'Unknown save error');
       }
       
       // Finish editing
@@ -559,12 +662,9 @@ export const DocumentEditor = () => {
       await loadFocusedDocument();
     } catch (error) {
       console.error('Error saving document:', error);
-      setDebug('Save error: ' + JSON.stringify(error));
-      if (editMode === 'json') {
-        setStatus('Error saving document. Check your JSON format.');
-      } else {
-        setStatus('Error saving document.');
-      }
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setDebug('Save error: ' + errorMsg);
+      setStatus('Error saving document: ' + errorMsg);
     } finally {
       setLoading(false);
     }
@@ -697,25 +797,14 @@ export const DocumentEditor = () => {
           ) : (
             <>
               <div className="flex items-center gap-2">
-                <label className="text-sm flex items-center">
+                <label className="text-sm flex items-center ml-4">
                   <input
-                    type="radio"
-                    name="editMode"
-                    checked={editMode === 'text'}
-                    onChange={() => setEditMode('text')}
+                    type="checkbox"
+                    checked={includeChildren}
+                    onChange={() => setIncludeChildren(!includeChildren)}
                     className="mr-1"
                   />
-                  Text
-                </label>
-                <label className="text-sm flex items-center">
-                  <input
-                    type="radio"
-                    name="editMode"
-                    checked={editMode === 'json'}
-                    onChange={() => setEditMode('json')}
-                    className="mr-1"
-                  />
-                  JSON
+                  Include Children
                 </label>
               </div>
               
@@ -759,7 +848,7 @@ export const DocumentEditor = () => {
           {isEditing ? (
             <div className="flex flex-col gap-2">
               <p className="text-sm font-medium">
-                {editMode === 'json' ? 'Edit JSON content:' : 'Edit text content:'}
+                Edit document content (JSON format):
               </p>
               <textarea 
                 value={editedContent}
@@ -823,9 +912,9 @@ export const DocumentEditor = () => {
           <li>Click on a document in RemNote to focus it</li>
           <li>Click "Refresh" to load the document</li>
           <li>Toggle "Show Children" to view document's children</li>
-          <li>Click "Edit Document" to make changes</li>
-          <li>Choose between Text or JSON editing mode</li>
-          <li>Click "Save Changes" to update the document</li>
+          <li>Click "Edit Document" to make changes to the document in JSON format</li>
+          <li>Toggle "Include Children" to edit child documents as well</li>
+          <li>Click "Save Changes" to update the document and its children</li>
           <li>Click on a child item to navigate to it</li>
         </ol>
       </div>
