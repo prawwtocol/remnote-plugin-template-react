@@ -670,7 +670,7 @@ export const DocumentEditor = () => {
           <div className="flex gap-2">
             <button
               onClick={handleToggleChildren}
-              className="text-xs px-2 py-1 bg-gray-200 rounded"
+              className="text-xs px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-gray-800"
             >
               {showChildren ? 'Hide Children' : 'Show Children'}
             </button>
@@ -678,7 +678,7 @@ export const DocumentEditor = () => {
             <button
               onClick={handleRefreshClick}
               disabled={loading}
-              className="text-xs px-2 py-1 bg-gray-200 rounded"
+              className="text-xs px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-gray-800"
             >
               Refresh
             </button>
@@ -690,7 +690,7 @@ export const DocumentEditor = () => {
             <button 
               onClick={handleEditClick}
               disabled={!focusedRem || loading}
-              className="px-3 py-1 bg-blue-500 text-white rounded disabled:bg-gray-300"
+              className="px-3 py-1 bg-blue-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-blue-600"
             >
               Edit Document
             </button>
@@ -722,14 +722,14 @@ export const DocumentEditor = () => {
               <button 
                 onClick={handleSaveClick}
                 disabled={loading}
-                className="px-3 py-1 bg-green-500 text-white rounded disabled:bg-gray-300"
+                className="px-3 py-1 bg-green-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-green-600"
               >
                 Save Changes
               </button>
               <button 
                 onClick={handleCancelClick}
                 disabled={loading}
-                className="px-3 py-1 bg-red-500 text-white rounded disabled:bg-gray-300"
+                className="px-3 py-1 bg-red-500 text-black rounded disabled:bg-gray-300 disabled:text-gray-500 hover:bg-red-600"
               >
                 Cancel
               </button>
