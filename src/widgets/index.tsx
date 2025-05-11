@@ -22,21 +22,30 @@ async function onActivate(plugin: ReactRNPlugin) {
     defaultValue: 42,
   });
 
-  // A command that inserts text into the editor if focused.
+  // Register a command to edit the focused document
   await plugin.app.registerCommand({
-    id: 'editor-command',
-    name: 'Editor Command',
+    id: 'edit-document-command',
+    name: 'Edit Document',
+    description: 'Open the document editor for the focused document',
     action: async () => {
-      plugin.editor.insertPlainText('Hello World!');
+      // Check if there's a focused document
+      const focusedRemId = await plugin.focus.getFocusedRem();
+      
+      if (!focusedRemId) {
+        await plugin.app.toast("Please focus on a document first");
+        return;
+      }
+      
+      // Open the document editor widget and show a toast notification
+      await plugin.window.openWidgetInRightSidebar('document_editor');
+      await plugin.app.toast("Document editor opened in the right sidebar");
     },
   });
 
-  // Show a toast notification to the user.
-  await plugin.app.toast("I'm a toast!");
-
-  // Register a sidebar widget.
-  await plugin.app.registerWidget('sample_widget', WidgetLocation.RightSidebar, {
+  // Register our document editor widget
+  await plugin.app.registerWidget('document_editor', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
+    widgetTabTitle: 'Document Editor'
   });
 }
 

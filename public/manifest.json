@@ -1,22 +1,22 @@
 {
   "manifestVersion": 1,
-  "id": "plugin_template",
-  "name": "Plugin Template",
-  "author": "remnote",
-  "repoUrl": "",
+  "id": "document-editor-plugin",
+  "name": "Document Editor",
+  "author": "Your Name",
+  "repoUrl": "https://github.com/yourusername/remnote-document-editor",
   "version": {
     "major": 0,
-    "minor": 0,
-    "patch": 1
+    "minor": 1,
+    "patch": 0
   },
   "theme": [],
   "enableOnMobile": false,
-  "description": "",
+  "description": "Edit documents and their structure in a text editor interface",
   "requestNative": false,
   "requiredScopes": [
     {
       "type": "All",
-      "level": "Read"
+      "level": "ReadCreateModify"
     }
   ]
 }
